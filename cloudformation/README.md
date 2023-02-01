@@ -26,14 +26,13 @@ Use the sample AWS CloudFormation Templates to create your own ECS Cluster with 
    aws cloudformation create-stack --stack-name NetworkStack --template-body file://networking_infra.yaml
    ```
 
-   **note:** The name you give the stack will need to be used as a parameter in the ECS Cluster Stack.
-
 3. Create the **ECS Cluster Stack**
 
    ```
-   aws cloudformation create-stack --stack-name myECSCluster --template-body file://ecs_resources.yaml --parameters NAME_OF_NETWORK_STACK
+   aws cloudformation create-stack --stack-name myECSCluster --template-body file://ecs_resources.yaml --parameters NetworkStack
    ```
   
+  **note:** The name of the NetworkStack was used as a parameter in the ECS Cluster Stack. If the name is changed in NetworkStack you must use same in the parameter of the ECS Cluster Stack.
   
 # Additional Resources
 
