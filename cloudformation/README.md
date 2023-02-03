@@ -34,6 +34,23 @@ Use the sample AWS CloudFormation Templates to create your own ECS Cluster with 
   
   **note:** The name of the NetworkStack was used as a parameter in the ECS Cluster Stack. If the name is changed in NetworkStack you must use same in the parameter of the ECS Cluster Stack.
   
+4. Create the **ECSFullStack** 
+
+This will build on the NetworkStack and create:
++ ALB - LoadBalancer, ALB Listener, Security Group, Target Group
++ AutoScaling  - Roles, 
++ CloudWatch - LogGroup, Alarms, 
++ EC2 - Container Instance, Keypair, ECS optimized AMI, Security Group
++ Autoscaling - ASG
++ ECS - Service, Task Definition, Tasks (sample app), Application AutoScaling (based on HTTP 5xx failure to ALB)
+   + VPC and subnets are being referenced form NetworkStack
+
+   ```
+   aws cloudformation create-stack --stack-name ECSFullStack --template-body file://ecs_ec2_service.yaml --parameters ParameterKey=NetworkStackNameParameter,ParameterValue=NetworkStack --capabilities CAPABILITY_IAM
+   ```
+  
+  **note:** The name of the NetworkStack was used as a parameter in the ECSFullStack. If the name is changed in NetworkStack you must use same in the parameter of the ECSFullStack.
+  
 # Additional Resources
 
 AWS CLI - https://docs.aws.amazon.com/cli/latest/reference/cloudformation/index.html
