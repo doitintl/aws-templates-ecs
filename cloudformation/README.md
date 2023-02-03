@@ -46,7 +46,7 @@ This will build on the NetworkStack and create:
    + VPC and subnets are being referenced form NetworkStack
 
    ```
-   aws cloudformation create-stack --stack-name ECSFullStack --template-body file://ecs_ec2_service.yaml --parameters ParameterKey=NetworkStackNameParameter,ParameterValue=NetworkStack --capabilities CAPABILITY_IAM
+   aws cloudformation create-stack --stack-name ECSFullStack --template-body file://ecs_ec2_stack.yaml --parameters ParameterKey=NetworkStackNameParameter,ParameterValue=NetworkStack --capabilities CAPABILITY_IAM
    ```
   
   **note:** The name of the NetworkStack was used as a parameter in the ECSFullStack. If the name is changed in NetworkStack you must use same in the parameter of the ECSFullStack.
