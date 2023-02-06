@@ -18,7 +18,9 @@ Use the sample AWS CloudFormation Templates to create your own ECS Cluster with 
 
 ## How to use the templates
 
-1. Clone this repository
+1. Clone this repository and move into working directory
+
+`cd aws-templates-ecs/cloudformation`
 
 2. Create the **NetworkStack**
 
