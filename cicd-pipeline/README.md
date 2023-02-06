@@ -31,7 +31,7 @@ We will be building ontop of resources created by the CloudFormation stacks `Net
 
 ```
 git clone xxxx
-cd cicd
+cd aws-templates-ecs/cicd-pipeline/code/
 chmod +x setup.sh
 sh setup.sh
 ```
