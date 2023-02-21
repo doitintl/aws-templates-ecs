@@ -1,4 +1,4 @@
-# ELK Stack using AWS OpenSearch
+# Observability Stack using Amazon OpenSearch
 
 ## Requirements
 - By default this template uses AMI `ami-0ea0f26a6d50850c5` from `eu-west-1` region to create a Reverse Proxy so you can access your OpenSearch Dashboard. 
@@ -69,6 +69,10 @@ For simplicity while testing you can use the ARN of the `OpenSearchTaskRole` as 
     note: The following command will run 200 concurrent connections to the URL of your Load Balancer. Run it for a few minutes and then press control-C to exit
 
     `siege -c 200 -i <ALB_URL>`
+    
+## Creating queries and visualizations in OpenSearch
+
+`https://docs.aws.amazon.com/opensearch-service/latest/developerguide/observability.html`
 
 
 ## Troubleshooting
