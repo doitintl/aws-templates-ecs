@@ -1,0 +1,977 @@
+# this template will build a full ECS Fargate service using a sample web application and an ELK stack that will aggregate your logs in OpenSearch. Amazon OpenSearch includes visualization and dashboards 
+
+# NOTE: OpenSearch will require you to grant a user with a role allowing it to write to the cluster. https://docs.aws.amazon.com/opensearch-service/latest/developerguide/fgac.html
+
+
+# **********************
+# **********************
+# **********************
+# **********************
+
+
+Parameters:
+  # VPC Variables
+  EnvironmentName:
+    Description: give this environments a name #ie. Production or Development
+    Type: String
+    Default: Dev Environment
+
+  # Amazon OpenSearch Variables
+  DomainName:
+    Type: String
+    Default: "opensearch-domain"
+  
+  OpenSearchMasterUserName:
+    Description: Amazon OpenSearch Service - Username
+    Default: "aosadmin" # you can choose your own username
+    Type: String
+
+  # AMI ID used for the Proxy Instance. This AMI is from Ireland region, you can use the AWS CLI command in the README.md to get the AMI for another region  
+
+  ProxyInstanceAMIID:
+    Default: "ami-0ea0f26a6d50850c5"
+    Type: String
+
+# ********************** 
+# **********************
+# **********************
+# **********************
+
+# VPC CIDR range 10.0.0.0 to 10.0.255.255
+# Public Subnet 1 CIDR 10.0.1.0 - 10.0.1.255
+# Public Subnet 2 CIDR 10.0.2.0 - 10.0.2.255
+# Public Subnet 3 CIDR 10.0.3.0 - 10.0.3.255
+# Private Subnet 1 CIDR 10.0.21.0 - 10.0.21.255
+# Private Subnet 2 CIDR 10.0.22.0 - 10.0.22.255
+# Private Subnet 3 CIDR 10.0.23.0 - 10.0.23.255
+Mappings:
+  SubnetConfig:
+    VPC:
+      CIDR: '10.0.0.0/16'
+    PublicSubnet1:
+      CIDR: '10.0.1.0/24'
+    PublicSubnet2:
+      CIDR: '10.0.2.0/24'
+    PublicSubnet3:
+      CIDR: '10.0.3.0/24'
+    PrivateSubnet1:
+      CIDR: '10.0.21.0/24'
+    PrivateSubnet2:
+      CIDR: '10.0.22.0/24'
+    PrivateSubnet3:
+      CIDR: '10.0.23.0/24'
+
+
+# **********************
+# **********************
+# **********************
+# **********************
+
+Resources:
+############################
+######## NETWORKING ########
+############################
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      CidrBlock: !FindInMap ['SubnetConfig', 'VPC', 'CIDR']
+
+  # Three public subnets and three private subnets for higher availability
+
+  PublicSubnetOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 0
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PublicSubnet1', 'CIDR']
+      MapPublicIpOnLaunch: true
+  PublicSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 1
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PublicSubnet2', 'CIDR']
+      MapPublicIpOnLaunch: true
+  PublicSubnetThree:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 2
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PublicSubnet3', 'CIDR']
+      MapPublicIpOnLaunch: true
+  PrivateSubnetOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 0
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PrivateSubnet1', 'CIDR']
+      MapPublicIpOnLaunch: true
+  PrivateSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 1
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PrivateSubnet2', 'CIDR']
+      MapPublicIpOnLaunch: true
+  PrivateSubnetThree:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+         Fn::Select:
+         - 2
+         - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: !FindInMap ['SubnetConfig', 'PrivateSubnet3', 'CIDR']
+      MapPublicIpOnLaunch: true
+
+  # resources for the subnets. Internet Gateway for the public subnets and NAT gateway for private subnets. This will also create route tables and associations
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    # may be missing !Ref 
+    DependsOn: NatPublicIP
+    Properties: 
+      SubnetId: !Ref PublicSubnetOne
+      AllocationId: !GetAtt NatPublicIP.AllocationId
+  NatPublicIP:
+    Type: AWS::EC2::EIP
+    # may be missing !Ref 
+    DependsOn: VPC
+    Properties:
+      Domain: vpc
+  GatewayAttachement:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref 'VPC'
+      InternetGatewayId: !Ref 'InternetGateway'
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachement
+    Properties:
+      RouteTableId: !Ref 'PublicRouteTable'
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref 'InternetGateway'
+  PublicSubnetOneRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetOne
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetTwoRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetTwo
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetThreeRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetThree
+      RouteTableId: !Ref PublicRouteTable
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      NatGatewayId: !Ref NatGateway
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+  PrivateSubnetOneRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetOne
+      RouteTableId: !Ref PrivateRouteTable
+  PrivateSubnetTwoRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetTwo
+      RouteTableId: !Ref PrivateRouteTable
+  PrivateSubnetThreeRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetThree
+      RouteTableId: !Ref PrivateRouteTable
+
+  ############################ 
+  ######## OpenSearch ########
+  ############################
+
+  # creating ServiceRole, Security Groups and the OpenSearch domain. This is set to create a cluster of 3 x 't3.small.search' instances (you can choose your own configuration) this is for high availability across 3 subnets.
+
+  # also, this will create an admin user 'aosadmin' and includes lambda function (with roles) to retrieve the password and export as an output 'AOSDomainPassword' which you can view in the Stack's CloudFormation 'Outputs' tab
+
+  OpenSearchServiceRole:
+    Type: 'AWS::IAM::ServiceLinkedRole'
+    Properties:
+      AWSServiceName: es.amazonaws.com
+
+  OpenSearchIngressSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: "opensearch-ingress-sg"
+      GroupDescription: "Security group for opensearch ingress rule"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - FromPort: '443'
+          IpProtocol: tcp
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - Description: Allow all outbound traffic
+          IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+
+  OpenSearchServiceDomain:
+    Type: 'AWS::OpenSearchService::Domain'
+    DependsOn: 
+      - OpenSearchIngressSecurityGroup
+      - OpenSearchServiceRole
+    Properties:
+      DomainName:
+        Ref: DomainName
+      EngineVersion: OpenSearch_2.3
+      ClusterConfig:
+        ZoneAwarenessEnabled: true
+        ZoneAwarenessConfig: 
+          AvailabilityZoneCount: 3
+        InstanceCount: '3'
+        InstanceType: t3.small.search
+      DomainEndpointOptions:
+        EnforceHTTPS: true
+      NodeToNodeEncryptionOptions:
+        Enabled: true
+      EncryptionAtRestOptions:
+        Enabled: true
+      EBSOptions:
+        EBSEnabled: true
+        Iops: '3000'
+        VolumeSize: '10'
+        VolumeType: 'gp3'
+      AccessPolicies:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: '*'
+            Action: 'es:*'
+            Resource: '*'
+      AdvancedOptions:
+        rest.action.multi.allow_explicit_index: true
+      AdvancedSecurityOptions:
+        Enabled: true
+        InternalUserDatabaseEnabled: true
+        MasterUserOptions:
+          MasterUserName: !Ref OpenSearchMasterUserName
+          MasterUserPassword: !Join
+                                - ""
+                                - - "{{resolve:secretsmanager:"
+                                  - !Ref AOSMasterPasswordSecret
+                                  - ":SecretString:password}}"
+      VPCOptions:
+        SubnetIds:
+          - !Ref PrivateSubnetOne
+          - !Ref PrivateSubnetTwo
+          - !Ref PrivateSubnetThree      
+        SecurityGroupIds:
+          - !Ref OpenSearchIngressSecurityGroup
+    UpdatePolicy:
+      EnableVersionUpgrade: true
+
+# Create opensearch password
+  AOSMasterPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: This secret has a dynamically generated secret password.
+      GenerateSecretString:
+        SecretStringTemplate: !Join [ '', [ '{"username": "', !Ref OpenSearchMasterUserName, '"}' ] ]
+        GenerateStringKey: "password"
+        PasswordLength: 10
+        ExcludeCharacters: "\" ' ( ) * + , - . / : ; < = > ! # ? @ [ \\ ] ^ _ ` { | } ~"
+
+  RetrieveAOSPasswordLambdaPolicy: 
+    Type: AWS::IAM::ManagedPolicy
+    Properties: 
+      PolicyDocument: 
+        Version: 2012-10-17
+        Statement: 
+          - Action: 
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Effect: Allow
+            Resource: arn:aws:logs:*:*:*
+            Sid: AllowCWLogsWrite
+          - Action: 
+              - secretsmanager:GetSecretValue
+            Effect: Allow
+            Resource: !Ref AOSMasterPasswordSecret
+    
+  RetrieveAOSPasswordLambdaExecutionRole: 
+    Type: AWS::IAM::Role
+    DependsOn: RetrieveAOSPasswordLambdaPolicy
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: 2012-10-17
+        Statement: 
+          - Action: 
+              - sts:AssumeRole
+            Effect: Allow
+            Principal: 
+              Service: 
+                - lambda.amazonaws.com
+      ManagedPolicyArns: 
+        - !Ref RetrieveAOSPasswordLambdaPolicy
+      Path: /
+
+  RetrieveAOSPasswordLambdaFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: AOSMasterPasswordSecret
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt RetrieveAOSPasswordLambdaExecutionRole.Arn
+      Runtime: python3.9
+      Timeout: 120
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import base64
+          import os
+          import cfnresponse
+          from botocore.exceptions import ClientError
+          SECRET_ARN = os.getenv('SECRET_ARN')
+          REGION = os.getenv('REGION')
+          def lambda_handler(event, context):
+              # Create a Secrets Manager client
+              session = boto3.session.Session()
+              client = session.client(
+                  service_name='secretsmanager',
+                  region_name=REGION
+              )
+              
+              secret = ""
+              
+              try:
+                  get_secret_value_response = client.get_secret_value(
+                      SecretId=SECRET_ARN
+                  )
+              except ClientError as err:
+                  print(err)
+                  cfnresponse.send(event, context, cfnresponse.FAILED, err)
+              else:
+                  # Decrypts secret using the associated KMS key.
+                  # Depending on whether the secret is a string or binary, one of these fields will be populated.
+                  if 'SecretString' in get_secret_value_response:
+                      secret = get_secret_value_response['SecretString']
+                  else:
+                      decoded_binary_secret = base64.b64decode(get_secret_value_response['SecretBinary'])
+              password_secret = json.loads(secret)
+              responseData = {"OpenSearchMasterPassword": password_secret["password"]}
+              print(responseData)
+              
+              if responseData:
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+              else:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, "Internal Error")
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref AOSMasterPasswordSecret
+          REGION: !Ref AWS::Region
+
+  RetrieveAOSPassword:
+    Type: Custom::RetrieveAOSPassword
+    DependsOn: RetrieveAOSPasswordLambdaFunction
+    Properties:
+        ServiceToken:
+            Fn::GetAtt: RetrieveAOSPasswordLambdaFunction.Arn
+  
+
+  ######## ECS ########
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+  FargateContainerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to the Fargate containers
+      VpcId: !Ref 'VPC'
+      SecurityGroupIngress:
+        - FromPort: 443
+          IpProtocol: tcp
+          ToPort: 443
+          CidrIp: !FindInMap ['SubnetConfig', 'VPC', 'CIDR']
+        - FromPort: 80
+          IpProtocol: tcp
+          ToPort: 80
+          CidrIp: !FindInMap ['SubnetConfig', 'VPC', 'CIDR']
+      SecurityGroupEgress:
+        - Description: Allow all outbound traffic
+          IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+  EcsSecurityGroupIngressFromPublicALB:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: allows Ingress traffic from the public ALB
+      GroupId: !Ref 'FargateContainerSecurityGroup'
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref 'PublicLoadBalancerSG'
+  EcsSecurityGroupIngressFromSelf:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: allows containers to talk to each other
+      GroupId: !Ref 'FargateContainerSecurityGroup'
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref 'FargateContainerSecurityGroup'
+
+ # task role that will allow the task to allow to write logs in OpenSearch. Do note that you must also link the 'OpenSearchTaskRole' IAM role manually as a 'back_end' role for a user in OpenSearch dashboard so it can be allowed to write and which index they can use in the cluster. 
+ 
+ # if this is not done you will get errors like ("no permissions for [indices:data/write/bulk] and User [name=arn:aws:iam::99999999999:role/OpenSearchTaskRole, backend_roles=[arn:aws:iam::99999999999:role/OpenSearchTaskRole]) https://docs.aws.amazon.com/opensearch-service/latest/developerguide/fgac.html
+
+  OpenSearchTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: OpenSearchTaskRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ecs-tasks.amazonaws.com
+          Action:
+            - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonOpenSearchServiceFullAccess
+  # This is a role which is used by Fargate containers using managed AWS policy to allow download of docker images. if you are using any Secrets you should add permissions here
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+
+# Application Load Balancer in public subnet that will serve as input to the Fargate Containers
+  PublicLoadBalancerSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to the public facing load balancer
+      VpcId: !Ref 'VPC'
+      SecurityGroupIngress:
+          # Allow access to ALB from anywhere on the internet
+          - CidrIp: 0.0.0.0/0
+            IpProtocol: -1
+  PublicLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+      - Key: idle_timeout.timeout_seconds
+        Value: 60
+      Subnets:
+        - !Ref PublicSubnetOne
+        - !Ref PublicSubnetTwo
+        - !Ref PublicSubnetThree
+      SecurityGroups: [!Ref 'PublicLoadBalancerSG']
+  # TargetGroup for my ECS application
+  PublicTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetType: ip
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Name: !Join ['-', [!Ref 'AWS::StackName', 'TargetGroup']]
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId: !Ref VPC
+  PublicLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref PublicTargetGroup
+      LoadBalancerArn: !Ref PublicLoadBalancer
+      Port: 80
+      Protocol: HTTP   
+  CloudwatchLogsGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Join 
+        - '-'
+        - - FirelensLogGroup
+          - !Ref 'AWS::StackName'
+      RetentionInDays: 14
+
+
+  ECSTaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    DependsOn: OpenSearchServiceDomain
+    Properties:
+      ExecutionRoleArn: !Ref ECSTaskExecutionRole
+      TaskRoleArn: !Ref OpenSearchTaskRole
+      Cpu: '1024'
+      Memory: '2 GB'
+      NetworkMode: 'awsvpc'
+      RequiresCompatibilities: 
+        - FARGATE
+      Family: !Sub 'OpenSearch-${AWS::StackName}'
+      ContainerDefinitions:
+        - Essential: true
+        # this is downloading the image from ECR Public as DockerHub may now throttle the download of images 
+          Image: public.ecr.aws/aws-observability/aws-for-fluent-bit:stable
+          Name: log_router
+          FirelensConfiguration:
+            Type: fluentbit
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref CloudwatchLogsGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-create-group: 'true'
+              awslogs-stream-prefix: firelens
+          Memory: '512'
+
+        - Essential: true
+          Image: public.ecr.aws/nginx/nginx:mainline-alpine
+          Name: http-web-app
+          LogConfiguration:
+            LogDriver: awsfirelens
+            Options:
+              Name: opensearch
+              Host: 
+                Fn::GetAtt: [ OpenSearchServiceDomain, DomainEndpoint ]
+              Port: '443'
+              Index: my_index
+              Aws_Auth: 'On'
+              Aws_Region: !Ref AWS::Region
+              Suppress_Type_Name: 'On'
+              tls: 'On'
+              retry_limit: '2'
+          Memory: '512'
+          PortMappings:
+            - ContainerPort: '80'
+  ECSService:
+    Type: 'AWS::ECS::Service'
+    DependsOn: [PublicLoadBalancerListener, OpenSearchServiceDomain]
+    Properties:
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+      DesiredCount: 3
+      LaunchType: FARGATE
+      NetworkConfiguration: 
+      # for high availability we chose 3 public subnets to deploy our containers
+        AwsvpcConfiguration:
+          Subnets:
+            - !Ref PublicSubnetOne
+            - !Ref PublicSubnetTwo
+            - !Ref PublicSubnetThree
+          AssignPublicIp: ENABLED
+          SecurityGroups: [!Ref 'FargateContainerSecurityGroup']
+      Cluster: !Ref ECSCluster
+      LoadBalancers:
+        - ContainerName: http-web-app
+          ContainerPort: '80'
+          TargetGroupArn: !Ref PublicTargetGroup
+      TaskDefinition: !Ref ECSTaskDefinition
+
+# **********************
+# **********************
+# **********************
+# **********************
+
+  ###############################
+  ######## Reverse Proxy ########
+  ###############################
+
+  # this proxy is for you to be able to add security layer to access your OpenSearch cluster. If you do not use the 'AOSDashboardsPublicIP' link (in CloudFormation Output tab) you will get timeout error. The link should look like this https://<PUBLIC-IP>/_dashboards
+
+  # This role as it is using SSM will allow you to use SSM Session Manager to SSH into the instance via the EC2 Console
+
+  # optionally you can do an AutoScaling group if you need to scale out in future
+
+  IAMRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: !Sub Linux-SSMRoletoEC2-${AWS::StackName}
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: ec2.amazonaws.com
+              Action: sts:AssumeRole
+        Path: "/"
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+        - 
+          Ref: IAMRole
+
+  ReverseProxyInstance:
+    Type: 'AWS::EC2::Instance'
+    DependsOn: GatewayAttachement
+    Properties:
+      InstanceType: t2.small
+      NetworkInterfaces: 
+        - AssociatePublicIpAddress: "true"
+          DeviceIndex: "0"
+          GroupSet: 
+            - Ref: "ReverseProxyInstanceSecurityGroup"
+          SubnetId: !Ref PublicSubnetOne
+      IamInstanceProfile: !Ref InstanceProfile
+      ImageId: ami-0ea0f26a6d50850c5
+      Tags:
+        - Key: InstanceType
+          Value: True
+        - Key: Name
+          Value: ProxyInstance
+      UserData:
+      # the userdata will configure the instance on launch as a reverse proxy and install SSL cert so you can use port 443
+
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install jq -y
+            amazon-linux-extras install nginx1.12
+            openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /etc/nginx/cert.key -out /etc/nginx/cert.crt -subj /C=US/ST=./L=./O=./CN=.\n
+            
+            cat << EOF > /etc/nginx/conf.d/nginx_opensearch.conf
+            server {
+                listen 443;
+                server_name \$host;
+                rewrite ^/$ https://\$host/_dashboards redirect;
+
+                # openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /etc/nginx/cert.key -out /etc/nginx/cert.crt -subj /C=US/ST=./L=./O=./CN=.\n
+                ssl_certificate           /etc/nginx/cert.crt;
+                ssl_certificate_key       /etc/nginx/cert.key;
+
+                ssl on;
+                ssl_session_cache  builtin:1000  shared:SSL:10m;
+                ssl_protocols  TLSv1 TLSv1.1 TLSv1.2;
+                ssl_ciphers HIGH:!aNULL:!eNULL:!EXPORT:!CAMELLIA:!DES:!MD5:!PSK:!RC4;
+                ssl_prefer_server_ciphers on;
+
+
+                location ^~ /_dashboards {
+                    # Forward requests to OpenSearch Dashboards
+                    proxy_pass https://DOMAIN_ENDPOINT/_dashboards;
+
+                    # Update cookie domain and path
+                    proxy_cookie_domain DOMAIN_ENDPOINT \$host;
+
+                    proxy_set_header Accept-Encoding "";
+                    sub_filter_types *;
+                    sub_filter DOMAIN_ENDPOINT \$host;
+                    sub_filter_once off;
+
+                    # Response buffer settings
+                    proxy_buffer_size 128k;
+                    proxy_buffers 4 256k;
+                    proxy_busy_buffers_size 256k;
+                }
+            }          
+            EOF
+            sed -i -e "s/DOMAIN_ENDPOINT/${OpenSearchServiceDomain.DomainEndpoint}/g" /etc/nginx/conf.d/nginx_opensearch.conf
+            systemctl restart nginx.service
+            systemctl enable nginx.service
+
+# security group for the reverse proxy instance
+# allows port 443 from anywhere and within the same subnet in VPC
+# allows port 22 for ssn access from teh same subnet
+# allows all egress
+
+  ReverseProxyInstanceSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable SSH access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: !FindInMap ['SubnetConfig', 'VPC', 'CIDR']
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: !FindInMap ['SubnetConfig', 'VPC', 'CIDR']
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - Description: Allow all outbound traffic
+          IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+
+
+## Lambda fuction to get the 'AOSDashboardsPublicIP' of the reverse proxy instance so you can access the OpenSearch dashboard
+
+  GetEC2PublicIP:
+      Type: AWS::Lambda::Function
+      Properties:
+        Code:
+          ZipFile: |
+            import json
+            import boto3
+            import logging
+            import urllib3
+            import time
+            http = urllib3.PoolManager()
+            logger = logging.getLogger(__name__)
+            logging.getLogger().setLevel(logging.INFO)
+            SUCCESS = "SUCCESS"
+            FAILED = "FAILED"
+            time.sleep(15)
+            def lambda_handler(event, context):
+                global arn
+                logger.info('Event: %s' % json.dumps(event))
+                responseData={}
+                try:
+                    if event['RequestType'] == 'Create' or event['RequestType'] == 'Update':
+                        print("Request Type:",event['RequestType'])
+                        GetPublicIP=event['ResourceProperties']['GetPublicIP']
+                        client = boto3.client('ec2')
+                        response = client.describe_instances(
+                            Filters=[ {
+                                    'Name': 'tag:InstanceType',
+                                    'Values': ['true']}
+                            ]
+                        )
+                        for r in response['Reservations']:
+                            for i in r['Instances']:
+                                PublicIpAddress = (i['PublicIpAddress'])
+                                print (PublicIpAddress)
+                        responseData={'PublicIpAddress':PublicIpAddress}
+                        print("Sending CFN")
+                    responseStatus = 'SUCCESS'
+                except Exception as e:
+                    print('Failed to process:', e)
+                    responseStatus = 'FAILURE'
+                    responseData = {'Failure': 'Check Logs.'}
+                send(event, context, responseStatus, responseData)
+            def send(event, context, responseStatus, responseData, physicalResourceId=None, noEcho=False):
+                responseUrl = event['ResponseURL']
+                print(responseUrl)
+                responseBody = {'Status': responseStatus,
+                                'Reason': 'See the details in CloudWatch Log Stream: ' + context.log_stream_name,
+                                'PhysicalResourceId': physicalResourceId or context.log_stream_name,
+                                'StackId': event['StackId'],
+                                'RequestId': event['RequestId'],
+                                'LogicalResourceId': event['LogicalResourceId'],
+                                'Data': responseData}
+                json_responseBody = json.dumps(responseBody)
+                print("Response body:\n" + json_responseBody)
+                headers = {
+                    'content-type' : '',
+                    'content-length' : str(len(json_responseBody))
+                }
+                try:
+                    response = http.request('PUT', responseUrl, headers=headers, body=json_responseBody)
+                    print("Status code:", response.status)
+                except Exception as e:
+                    print("send(..) failed executing http.request(..):", e)
+        FunctionName: 'GetPublicIpAddressFunction'
+        Handler: "index.lambda_handler"
+        Timeout: 30
+        Role: !GetAtt 'LambdaRole.Arn'
+        Runtime: python3.9
+  Lambdatrigger:
+     Type: 'Custom::GetEC2PublicIP'
+     DependsOn: ReverseProxyInstance
+     Properties:
+       ServiceToken: !GetAtt 'GetEC2PublicIP.Arn'
+       GetPublicIP: !Ref GetEC2PublicIP
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F3
+            reason: "Required for GetPublicIP"
+          - id: W11
+            reason: "Required for GetPublicIP"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: "lambda-logs"
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ec2:Describe*'
+                  - 'ec2:List*'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - "arn:aws:logs:*:*:*"
+
+
+
+# variables for the below will be shown in the Stacks 'Outputs' tab in the CloudFormation Console. you can also use the AWS CLI to retrive the variables as in the example below
+
+# aws cloudformation describe-stacks --stack-name <STACK_NAME> --query "Stacks[0].Outputs[?OutputKey == 'VPCId'].OutputValue" --output text)
+
+
+
+Outputs:
+# network outputs
+  VPCId:
+    Description: The ID of the VPC that this stack is deployed in
+    Value: !Ref 'VPC'
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'VPCId' ] ]
+  PublicSubnetOne:
+    Description: Public subnet one
+    Value: !Ref 'PublicSubnetOne'
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'PublicSubnetOne' ] ]
+  PublicSubnetTwo:
+    Description: Public subnet two
+    Value: !Ref 'PublicSubnetTwo'
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'PublicSubnetTwo' ] ]
+  PublicSubnetThree:
+    Description: Public subnet two
+    Value: !Ref 'PublicSubnetThree'
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'PublicSubnetThree' ] ]
+  PrivateSubnetOne:
+    Description: Private subnet one
+    Value: !Ref 'PrivateSubnetOne'
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'PrivateSubnetOne' ] ]
+  PrivateSubnetTwo:
+    Description: Private subnet two
+    Value: !Ref 'PrivateSubnetTwo'
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'PrivateSubnetTwo' ] ]
+  PrivateSubnetThree:
+    Description: Private subnet two
+    Value: !Ref 'PrivateSubnetThree'
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'PrivateSubnetThree' ] ]
+
+# Opensearch Outputs
+  AOSDomainArn:
+    Value:
+      'Fn::GetAtt':
+        - OpenSearchServiceDomain
+        - Arn
+    Export:
+      Name: AOSDomainArn
+  AOSDomainEndpoint:
+    Value:
+      'Fn::GetAtt':
+        - OpenSearchServiceDomain
+        - DomainEndpoint
+    Export:
+      Name: AOSDomainEndpoint
+  AOSDomainUserName:
+    Value: !Ref OpenSearchMasterUserName
+    Export:
+      Name: AOSDomainUserName
+  AOSDomainPassword:
+    Value: !GetAtt RetrieveAOSPassword.OpenSearchMasterPassword
+    Export:
+      Name: AOSDomainPassword
+
+# to get the public IP from the proxy we are using to reach opensearch dashboard
+
+  AOSDashboardsPublicIP:
+    Description: Proxy (Public IP) for Amazon Opensearch Dashboards
+    Value:
+      Fn::Join:
+      - ''
+      - - https://
+        - !GetAtt Lambdatrigger.PublicIpAddress
+        - /_dashboards
+    Export:
+      Name: AOSDashboardsPublicIP
+
+
+
+# ECS Outputs
+  ECSService:
+    Value: !Ref ECSService
+  PublicLoadBalancer:
+    Description: Your ALB DNS URL
+    Value: !Join 
+      - ''
+      - - !GetAtt 
+          - PublicLoadBalancer
+          - DNSName
+  ECSTaskDefinition:
+    Value: !Ref ECSTaskDefinition
+  ClusterName:
+    Description: The name of the ECS cluster
+    Value: !Ref 'ECSCluster'
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'ClusterName' ] ]
+  ECSTaskExecutionRole:
+    Description: The ARN of the ECS role
+    Value: !GetAtt 'ECSTaskExecutionRole.Arn'
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'ECSTaskExecutionRole' ] ]
+  PublicListener:
+    Description: The ARN of the public load balancer's Listener
+    Value: !Ref PublicLoadBalancerListener
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'PublicListener' ] ]
+  FargateContainerSecurityGroup:
+    Description: A security group used to allow Fargate containers to receive traffic
+    Value: !Ref 'FargateContainerSecurityGroup'
+    Export:
+      Name: !Join [ ':', [ !Ref 'AWS::StackName', 'FargateContainerSecurityGroup' ] ]
